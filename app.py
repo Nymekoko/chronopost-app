@@ -121,6 +121,24 @@ def add_articles_to_pdf(pdf_bytes, order_items, page_refs):
     output.seek(0)
     return output, matched, unmatched
 
+@app.route('/debug', methods=['POST'])
+def debug():
+    if 'pdf' not in request.files or 'csv' not in request.files:
+        return jsonify({'error': 'missing files'}), 400
+    pdf_bytes = request.files['pdf'].read()
+    csv_file = request.files['csv']
+    order_items = build_order_items(csv_file)
+    page_refs = get_page_references(pdf_bytes)
+    sample = {str(k): v for k, v in list(page_refs.items())[:5]}
+    csv_sample = {str(k): v for k, v in list(order_items.items())[:5]}
+    matched = sum(1 for ref in page_refs.values() if ref and order_items.get(ref))
+    return jsonify({
+        'page_refs': sample,
+        'csv_orders': csv_sample,
+        'matched': matched,
+        'total_pages': len(page_refs),
+        'total_orders': len(order_items)
+    })
 
 @app.route('/')
 def index():

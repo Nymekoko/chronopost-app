@@ -8,7 +8,7 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 
 def build_order_items(csv_file):
@@ -21,29 +21,32 @@ def build_order_items(csv_file):
             continue
         items = []
         for _, row in group.iterrows():
-            qty = int(row['Lineitem quantity'])
-            item = str(row['Lineitem name'])
-            items.append(f'{qty}x {item}')
+            try:
+                qty = int(row['Lineitem quantity'])
+                item = str(row['Lineitem name'])
+                items.append(f'{qty}x {item}')
+            except Exception:
+                pass
         order_items[ref] = items
     return order_items
 
 
 def get_page_references(pdf_bytes):
     page_refs = {}
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for i, p in enumerate(pdf.pages):
-            ref_val = None
-            try:
-                # Extract full text and search for "Reference : XXXX"
-                text = p.extract_text() or ''
-                matches = re.findall(r'Reference\s*:\s*(\d{4,})', text)
-                for m in matches:
-                    # Take the one that appears in the right half (main label)
-                    ref_val = int(m)
-                    break
-            except Exception:
-                pass
-            page_refs[i] = ref_val
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for i, p in enumerate(pdf.pages):
+                ref_val = None
+                try:
+                    text = p.extract_text() or ''
+                    matches = re.findall(r'Reference\s*[:\-]?\s*(\d{4,6})', text)
+                    if matches:
+                        ref_val = int(matches[0])
+                except Exception:
+                    pass
+                page_refs[i] = ref_val
+    except Exception:
+        pass
     return page_refs
 
 
@@ -67,93 +70,29 @@ def add_articles_to_pdf(pdf_bytes, order_items, page_refs):
         elif ref:
             unmatched += 1
 
-        packet = io.BytesIO()
-        c = canvas.Canvas(packet, pagesize=(PAGE_W, PAGE_H))
+        try:
+            packet = io.BytesIO()
+            c = canvas.Canvas(packet, pagesize=(PAGE_W, PAGE_H))
 
-        if items:
-            n = len(items)
-            if n == 1:
-                font_size, line_height = 9, 10
-            elif n == 2:
-                font_size, line_height = 8, 9
-            elif n == 3:
-                font_size, line_height = 7, 8
-            else:
-                font_size, line_height = 6.5, 7.5
+            if items:
+                n = len(items)
+                if n == 1:
+                    font_size, line_height = 9, 10
+                elif n == 2:
+                    font_size, line_height = 8, 9
+                elif n == 3:
+                    font_size, line_height = 7, 8
+                else:
+                    font_size, line_height = 6.5, 7.5
 
-            c.setFillColorRGB(1.0, 0.95, 0.8)
-            c.setStrokeColorRGB(0.85, 0.4, 0.0)
-            c.setLineWidth(0.6)
-            c.rect(BOX_X1, BOX_PDF_BOTTOM, BOX_X2 - BOX_X1, BOX_HEIGHT, fill=1, stroke=1)
+                c.setFillColorRGB(1.0, 0.95, 0.8)
+                c.setStrokeColorRGB(0.85, 0.4, 0.0)
+                c.setLineWidth(0.6)
+                c.rect(BOX_X1, BOX_PDF_BOTTOM, BOX_X2 - BOX_X1, BOX_HEIGHT, fill=1, stroke=1)
 
-            c.setFillColorRGB(0.6, 0.15, 0.0)
-            c.setFont("Helvetica-Bold", font_size)
+                c.setFillColorRGB(0.6, 0.15, 0.0)
+                c.setFont("Helvetica-Bold", font_size)
 
-            total_text_h = n * line_height
-            start_y = BOX_PDF_BOTTOM + (BOX_HEIGHT + total_text_h) / 2 - line_height + 1
-            max_chars = int((BOX_X2 - BOX_X1 - 8) / (font_size * 0.52))
-
-            for i, item_text in enumerate(items):
-                y = start_y - i * line_height
-                if len(item_text) > max_chars:
-                    item_text = item_text[:max_chars - 1] + '…'
-                c.drawString(BOX_X1 + 4, y, item_text)
-
-        c.save()
-        packet.seek(0)
-
-        overlay_reader = PdfReader(packet)
-        original_page = reader.pages[page_idx]
-        original_page.merge_page(overlay_reader.pages[0])
-        writer.add_page(original_page)
-
-    output = io.BytesIO()
-    writer.write(output)
-    output.seek(0)
-    return output, matched, unmatched
-
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-
-@app.route('/process', methods=['POST'])
-def process():
-    if 'pdf' not in request.files or 'csv' not in request.files:
-        return jsonify({'error': 'Fichiers PDF et CSV requis'}), 400
-
-    pdf_file = request.files['pdf']
-    csv_file = request.files['csv']
-
-    if not pdf_file.filename.endswith('.pdf'):
-        return jsonify({'error': 'Le fichier doit être un PDF'}), 400
-    if not csv_file.filename.endswith('.csv'):
-        return jsonify({'error': 'Le fichier doit être un CSV'}), 400
-
-    try:
-        pdf_bytes = pdf_file.read()
-        order_items = build_order_items(csv_file)
-        page_refs = get_page_references(pdf_bytes)
-        output_pdf, matched, unmatched = add_articles_to_pdf(pdf_bytes, order_items, page_refs)
-
-        filename = pdf_file.filename.replace('.pdf', '_avec_articles.pdf')
-        response = send_file(
-            output_pdf,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=filename
-        )
-        response.headers['X-Matched'] = str(matched)
-        response.headers['X-Unmatched'] = str(unmatched)
-        response.headers['X-Total'] = str(len(page_refs))
-        response.headers['Access-Control-Expose-Headers'] = 'X-Matched, X-Unmatched, X-Total'
-        return response
-
-    except Exception as e:
-        return jsonify({'error': f'Erreur de traitement: {str(e)}'}), 500
-
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+                total_text_h = n * line_height
+                start_y = BOX_PDF_BOTTOM + (BOX_HEIGHT + total_text_h) / 2 - line_height + 1
+                max_chars = int((BOX_X2 - BOX_X1 - 8) / (font_size * 0.52))

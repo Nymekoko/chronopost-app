@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import pandas as pd
 import pdfplumber
 from flask import Flask, request, send_file, render_template, jsonify
@@ -11,7 +12,6 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
 
 def build_order_items(csv_file):
-    """Parse CSV and return dict: ref_number -> [item strings]"""
     df = pd.read_csv(csv_file)
     order_items = {}
     for name, group in df.groupby('Name'):
@@ -29,38 +29,32 @@ def build_order_items(csv_file):
 
 
 def get_page_references(pdf_bytes):
-    """Extract reference number from each page using pdfplumber"""
     page_refs = {}
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, p in enumerate(pdf.pages):
-            words = p.extract_words()
             ref_val = None
-            for j, w in enumerate(words):
-                if w['text'] == 'Reference' and w.get('upright', True) and w['x0'] > 500:
-                    # Look at all remaining words for a number nearby
-                    for k in range(j + 1, min(j + 6, len(words))):
-                        try:
-                            candidate = words[k]['text'].strip()
-                            if candidate.isdigit() and len(candidate) >= 4:
-                                ref_val = int(candidate)
-                                break
-                        except (IndexError, KeyError):
-                            continue
-                    if ref_val:
-                        break
+            try:
+                # Extract full text and search for "Reference : XXXX"
+                text = p.extract_text() or ''
+                matches = re.findall(r'Reference\s*:\s*(\d{4,})', text)
+                for m in matches:
+                    # Take the one that appears in the right half (main label)
+                    ref_val = int(m)
+                    break
+            except Exception:
+                pass
             page_refs[i] = ref_val
     return page_refs
 
 
 def add_articles_to_pdf(pdf_bytes, order_items, page_refs):
-    """Overlay article text above chronopost logo on each page"""
     reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
 
     PAGE_W, PAGE_H = 842, 595
     BOX_X1, BOX_X2 = 514, 822
     BOX_PDF_BOTTOM, BOX_PDF_TOP = 571, 593
-    BOX_HEIGHT = BOX_PDF_TOP - BOX_PDF_BOTTOM  # 22pt
+    BOX_HEIGHT = BOX_PDF_TOP - BOX_PDF_BOTTOM
 
     matched, unmatched = 0, 0
 
@@ -87,13 +81,11 @@ def add_articles_to_pdf(pdf_bytes, order_items, page_refs):
             else:
                 font_size, line_height = 6.5, 7.5
 
-            # Background box
             c.setFillColorRGB(1.0, 0.95, 0.8)
             c.setStrokeColorRGB(0.85, 0.4, 0.0)
             c.setLineWidth(0.6)
             c.rect(BOX_X1, BOX_PDF_BOTTOM, BOX_X2 - BOX_X1, BOX_HEIGHT, fill=1, stroke=1)
 
-            # Text
             c.setFillColorRGB(0.6, 0.15, 0.0)
             c.setFont("Helvetica-Bold", font_size)
 
@@ -145,9 +137,7 @@ def process():
         page_refs = get_page_references(pdf_bytes)
         output_pdf, matched, unmatched = add_articles_to_pdf(pdf_bytes, order_items, page_refs)
 
-        total_pages = len(page_refs)
         filename = pdf_file.filename.replace('.pdf', '_avec_articles.pdf')
-
         response = send_file(
             output_pdf,
             mimetype='application/pdf',
@@ -156,7 +146,7 @@ def process():
         )
         response.headers['X-Matched'] = str(matched)
         response.headers['X-Unmatched'] = str(unmatched)
-        response.headers['X-Total'] = str(total_pages)
+        response.headers['X-Total'] = str(len(page_refs))
         response.headers['Access-Control-Expose-Headers'] = 'X-Matched, X-Unmatched, X-Total'
         return response
 

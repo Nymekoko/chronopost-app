@@ -36,11 +36,16 @@ def get_page_references(pdf_bytes):
             words = p.extract_words()
             ref_val = None
             for j, w in enumerate(words):
-                if w['text'] == 'Reference' and w['upright'] and w['x0'] > 500:
-                    for k in range(j + 1, min(j + 4, len(words))):
-                        if words[k]['text'].isdigit():
-                            ref_val = int(words[k]['text'])
-                            break
+                if w['text'] == 'Reference' and w.get('upright', True) and w['x0'] > 500:
+                    # Look at all remaining words for a number nearby
+                    for k in range(j + 1, min(j + 6, len(words))):
+                        try:
+                            candidate = words[k]['text'].strip()
+                            if candidate.isdigit() and len(candidate) >= 4:
+                                ref_val = int(candidate)
+                                break
+                        except (IndexError, KeyError):
+                            continue
                     if ref_val:
                         break
             page_refs[i] = ref_val

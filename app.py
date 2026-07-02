@@ -12,22 +12,45 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 
 def build_order_items(csv_file):
-    df = pd.read_csv(csv_file)
+    # Auto-detect delimiter (Shopify uses ",", Chronopost import uses ";")
+    # and strip BOM if present (utf-8-sig)
+    df = pd.read_csv(csv_file, sep=None, engine='python', encoding='utf-8-sig')
+
     order_items = {}
-    for name, group in df.groupby('Name'):
-        try:
-            ref = int(str(name).replace('#', '').strip())
-        except ValueError:
-            continue
-        items = []
-        for _, row in group.iterrows():
+
+    if 'Name' in df.columns and 'Lineitem name' in df.columns:
+        # Raw Shopify orders export format
+        for name, group in df.groupby('Name'):
             try:
-                qty = int(row['Lineitem quantity'])
-                item = str(row['Lineitem name'])
-                items.append(f'{qty}x {item}')
-            except Exception:
-                pass
-        order_items[ref] = items
+                ref = int(str(name).replace('#', '').strip())
+            except ValueError:
+                continue
+            items = []
+            for _, row in group.iterrows():
+                try:
+                    qty = int(row['Lineitem quantity'])
+                    item = str(row['Lineitem name'])
+                    items.append(f'{qty}x {item}')
+                except Exception:
+                    pass
+            order_items[ref] = items
+
+    elif 'Référence' in df.columns and 'Description du contenu' in df.columns:
+        # Chronopost import CSV format (already converted from Shopify)
+        for _, row in df.iterrows():
+            try:
+                ref = int(str(row['Référence']).strip())
+            except (ValueError, TypeError):
+                continue
+            content = str(row['Description du contenu']).strip()
+            if content and content.lower() != 'nan':
+                order_items.setdefault(ref, []).append(content)
+
+    else:
+        raise ValueError(
+            f"Format CSV non reconnu. Colonnes trouvées: {list(df.columns)}"
+        )
+
     return order_items
 
 

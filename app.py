@@ -147,7 +147,68 @@ def add_articles_to_pdf(pdf_bytes, order_items, page_refs):
     output.seek(0)
     return output, matched, unmatched
 
+
 @app.route('/debug', methods=['POST'])
 def debug():
     if 'pdf' not in request.files or 'csv' not in request.files:
-        return
+        return jsonify({'error': 'missing files'}), 400
+    pdf_bytes = request.files['pdf'].read()
+    csv_file = request.files['csv']
+    order_items = build_order_items(csv_file)
+    page_refs = get_page_references(pdf_bytes)
+    sample = {str(k): v for k, v in list(page_refs.items())[:5]}
+    csv_sample = {str(k): v for k, v in list(order_items.items())[:5]}
+    matched = sum(1 for ref in page_refs.values() if ref and order_items.get(ref))
+    return jsonify({
+        'page_refs': sample,
+        'csv_orders': csv_sample,
+        'matched': matched,
+        'total_pages': len(page_refs),
+        'total_orders': len(order_items)
+    })
+
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+@app.route('/process', methods=['POST'])
+def process():
+    if 'pdf' not in request.files or 'csv' not in request.files:
+        return jsonify({'error': 'Fichiers PDF et CSV requis'}), 400
+
+    pdf_file = request.files['pdf']
+    csv_file = request.files['csv']
+
+    if not pdf_file.filename.lower().endswith('.pdf'):
+        return jsonify({'error': 'Le fichier doit être un PDF'}), 400
+    if not csv_file.filename.lower().endswith('.csv'):
+        return jsonify({'error': 'Le fichier doit être un CSV'}), 400
+
+    try:
+        pdf_bytes = pdf_file.read()
+        order_items = build_order_items(csv_file)
+        page_refs = get_page_references(pdf_bytes)
+        output_pdf, matched, unmatched = add_articles_to_pdf(pdf_bytes, order_items, page_refs)
+
+        filename = pdf_file.filename.replace('.pdf', '_avec_articles.pdf')
+        response = send_file(
+            output_pdf,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+        response.headers['X-Matched'] = str(matched)
+        response.headers['X-Unmatched'] = str(unmatched)
+        response.headers['X-Total'] = str(len(page_refs))
+        response.headers['Access-Control-Expose-Headers'] = 'X-Matched, X-Unmatched, X-Total'
+        return response
+
+    except Exception as e:
+        return jsonify({'error': f'Erreur de traitement: {str(e)}'}), 500
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
